@@ -23,6 +23,7 @@ cd sefer-photo-renamer
 pip install -r requirements.txt
 
 # Скачать модели (ссылки в разделе Models)
+python download_models.py  # digit_detector.pt
 # Запуск GUI
 python gui.py
 
