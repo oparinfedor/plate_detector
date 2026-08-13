@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import filedialog, ttk, scrolledtext, messagebox
 from pathlib import Path
 import threading
+import queue
+import json
+from datetime import datetime
 from ultralytics import YOLO
 import pandas as pd
 import shutil
@@ -38,7 +41,15 @@ class PlateOCRApp:
         self.cancel_flag = threading.Event()
         self.log = None  # init log before use
 
+        # process() крутится в отдельном потоке, а Tk не потокобезопасен -
+        # никакие обращения к виджетам оттуда напрямую. Воркер только
+        # кладёт сообщения в очередь, единственное место, которое реально
+        # трогает виджеты, - _poll_log_queue на главном потоке (по таймеру
+        # root.after).
+        self.log_queue = queue.Queue()
+
         self.setup_ui()
+        self._poll_log_queue()
         self.log_msg(f"✅ Loaded models: {plate_model_path}, {digit_model_path}")
     
     def setup_ui(self):
@@ -58,6 +69,7 @@ class PlateOCRApp:
         self.cancel_btn = tk.Button(btn_frame, text="Cancel", command=self.cancel_process, state='disabled')
         self.cancel_btn.pack(side=tk.LEFT, padx=5)
         tk.Button(btn_frame, text="Export", command=self.export_renamed).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Undo last run", command=self.undo_last_run).pack(side=tk.LEFT, padx=5)
         
         self.progress = ttk.Progressbar(self.root, mode='indeterminate')
         self.progress.pack(fill='x', padx=20, pady=10)
@@ -66,11 +78,25 @@ class PlateOCRApp:
         self.log.pack(fill='both', expand=True, padx=20, pady=10)
     
     def log_msg(self, msg):
-        if self.log:
-            self.log.insert(tk.END, msg + '\n')
-            self.log.see(tk.END)
-        self.root.update()
-    
+        # Может звать и главный, и воркер-поток - кладём в очередь и всё,
+        # никаких обращений к виджетам здесь.
+        self.log_queue.put(msg)
+
+    def _poll_log_queue(self):
+        try:
+            while True:
+                item = self.log_queue.get_nowait()
+                if item == "__DONE__":
+                    self.progress.stop()
+                    self.processing = False
+                    self.cancel_btn.config(state='disabled')
+                elif self.log:
+                    self.log.insert(tk.END, item + '\n')
+                    self.log.see(tk.END)
+        except queue.Empty:
+            pass
+        self.root.after(100, self._poll_log_queue)
+
     def browse_folder(self):
         folder = filedialog.askdirectory()
         if folder:
@@ -159,11 +185,11 @@ class PlateOCRApp:
             df.to_csv('gui_plate_codes.csv', index=False)
             self.log_msg(f"✅ Распознано: {len(df)} из {len(images)} → gui_plate_codes.csv")
 
-            # Rename
+            # Rename (копия, оригиналы не трогаем)
             renamed_dir = input_path / 'renamed'
             renamed_dir.mkdir(exist_ok=True)
 
-            renamed_count = 0
+            manifest_entries = []
             for _, row in df.iterrows():
                 if self.cancel_flag.is_set():
                     break
@@ -172,15 +198,21 @@ class PlateOCRApp:
                     new_name = f"{row['code']}_{orig_img.name}"
                     shutil.copy2(orig_img, renamed_dir / new_name)
                     self.log_msg(f"✅ {orig_img.name} → {new_name}")
-                    renamed_count += 1
+                    manifest_entries.append({"original": row['image'], "renamed": new_name})
 
-            self.log_msg(f"✅ Renamed {renamed_count} images → {renamed_dir}")
+            manifest = {
+                "run_at": datetime.now().isoformat(timespec="seconds"),
+                "entries": manifest_entries,
+            }
+            (renamed_dir / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            self.log_msg(f"✅ Renamed {len(manifest_entries)} images → {renamed_dir}")
         except Exception as e:
             self.log_msg(f"❌ Error: {e}")
         finally:
-            self.progress.stop()
-            self.processing = False
-            self.cancel_btn.config(state='disabled')
+            self.log_queue.put("__DONE__")
     
     def export_renamed(self):
         out_folder = filedialog.askdirectory(title="Export renamed")
@@ -191,6 +223,25 @@ class PlateOCRApp:
                 self.log_msg(f"✅ Exported {len(list(renamed_dir.glob('*')))} files")
             else:
                 messagebox.showerror("Error", "No renamed files!")
+
+    def undo_last_run(self):
+        """Удаляет файлы последнего прогона из renamed/ по manifest.json.
+        Оригиналы не трогаются - они туда и не копировались."""
+        renamed_dir = Path(self.input_folder.get()) / 'renamed'
+        manifest_path = renamed_dir / "manifest.json"
+        if not manifest_path.exists():
+            self.log_msg("Отменять нечего - manifest.json не найден")
+            return
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        removed = 0
+        for entry in manifest.get("entries", []):
+            renamed_file = renamed_dir / entry["renamed"]
+            if renamed_file.exists():
+                renamed_file.unlink()
+                removed += 1
+        manifest_path.unlink()
+        self.log_msg(f"↩️ Undo: удалено {removed} файлов из {renamed_dir} (прогон от {manifest.get('run_at')})")
 
 if __name__ == "__main__":
     root = tk.Tk()
