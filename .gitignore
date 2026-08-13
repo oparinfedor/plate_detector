@@ -34,6 +34,7 @@ runs/
 predict*/
 *_results.csv
 eval_mismatches.csv
+*.log
 
 # Датасеты и рабочие файлы - реальные фото, не для публикации в код-репозитории
 test/

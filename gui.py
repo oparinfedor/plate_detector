@@ -6,8 +6,11 @@ from ultralytics import YOLO
 import pandas as pd
 import shutil
 
+from collections import Counter
+
 from core.detect import find_plate_crop
 from core.decode import read_digit_boxes, select_digit_string
+from core.sequence import correct_records
 
 class PlateOCRApp:
     def __init__(self, root):
@@ -101,12 +104,16 @@ class PlateOCRApp:
             self.log_msg(f"Found {len(images)} images")
 
             digit_count_str = self.digit_count.get().strip()
-            expected_length = int(digit_count_str) if digit_count_str.isdigit() else None
+            manual_length = int(digit_count_str) if digit_count_str.isdigit() else None
 
             # Кроп режется из памяти (core.detect), поэтому связь
             # "результат -> исходное фото" не может потеряться - идём по
             # тому же списку images, что и печатаем в лог.
-            ocr_results = []
+            # Цифры детектируем один раз за проход и запоминаем боксы -
+            # финальную сборку кода (с учётом длины) делаем вторым,
+            # дешёвым проходом, когда длина уже известна (вручную или
+            # автоматически).
+            detections = []
             for i, orig_img in enumerate(images):
                 if self.cancel_flag.is_set():
                     self.log_msg("Cancelled by user")
@@ -120,14 +127,35 @@ class PlateOCRApp:
                     continue
 
                 digit_boxes = read_digit_boxes(crop, self.digit_model)
+                detections.append((orig_img, digit_boxes))
+
+            if manual_length:
+                expected_length = manual_length
+            else:
+                # Автоопределение: длина без нормализации почти всегда
+                # одинакова в пределах одной сессии (одна площадка) -
+                # берём самую частую среди правдоподобных (3-4 цифры).
+                geo_lengths = (len(select_digit_string(boxes)) for _, boxes in detections)
+                lengths = Counter(n for n in geo_lengths if 3 <= n <= 4)
+                expected_length = lengths.most_common(1)[0][0] if lengths else None
+                if expected_length:
+                    self.log_msg(f"Digit count не задан - определил автоматически: {expected_length}")
+
+            ocr_results = []
+            for orig_img, digit_boxes in detections:
                 code = select_digit_string(digit_boxes, expected_length=expected_length)
                 if not code:
                     self.log_msg(f"  ⚠️ Цифры не распознаны: {orig_img.name}")
                     continue
+                ocr_results.append({'image': orig_img.name, 'path': orig_img, 'code': code})
 
-                ocr_results.append({'image': orig_img.name, 'code': code})
+            if expected_length:
+                self.log_msg("Уточняю номера по порядку съёмки (EXIF)...")
+                ocr_results = correct_records(ocr_results, expected_length)
+            else:
+                self.log_msg("Digit count не задан - уточнение по EXIF-последовательности пропущено")
 
-            df = pd.DataFrame(ocr_results)
+            df = pd.DataFrame(ocr_results)[['image', 'code']] if ocr_results else pd.DataFrame(columns=['image', 'code'])
             df.to_csv('gui_plate_codes.csv', index=False)
             self.log_msg(f"✅ Распознано: {len(df)} из {len(images)} → gui_plate_codes.csv")
 
