@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 import pandas as pd
 import shutil
+from PIL import Image, ImageTk
 
 from collections import Counter
 
@@ -99,6 +100,9 @@ class PlateOCRApp:
                     self.progress.stop()
                     self.processing = False
                     self.cancel_btn.config(state='disabled')
+                elif isinstance(item, tuple) and item[0] == "__REVIEW__":
+                    _, review_items, input_path = item
+                    self.open_review_screen(review_items, input_path)
                 elif self.log:
                     self.log.insert(tk.END, item + '\n')
                     self.log.see(tk.END)
@@ -190,39 +194,128 @@ class PlateOCRApp:
             else:
                 self.log_msg("Digit count не задан - уточнение по EXIF-последовательности пропущено")
 
-            df = pd.DataFrame(ocr_results)[['image', 'code']] if ocr_results else pd.DataFrame(columns=['image', 'code'])
-            codes_csv = input_path / 'gui_plate_codes.csv'
-            df.to_csv(codes_csv, index=False)
-            self.log_msg(f"✅ Распознано: {len(df)} из {len(images)} → {codes_csv}")
-
-            # Rename (копия, оригиналы не трогаем)
-            renamed_dir = input_path / 'renamed'
-            renamed_dir.mkdir(exist_ok=True)
-
-            manifest_entries = []
-            for _, row in df.iterrows():
-                if self.cancel_flag.is_set():
-                    break
-                orig_img = input_path / row['image']
-                if orig_img.exists():
-                    new_name = f"{row['code']}_{orig_img.name}"
-                    shutil.copy2(orig_img, renamed_dir / new_name)
-                    self.log_msg(f"✅ {orig_img.name} → {new_name}")
-                    manifest_entries.append({"original": row['image'], "renamed": new_name})
-
-            manifest = {
-                "run_at": datetime.now().isoformat(timespec="seconds"),
-                "entries": manifest_entries,
-            }
-            (renamed_dir / "manifest.json").write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-
-            self.log_msg(f"✅ Renamed {len(manifest_entries)} images → {renamed_dir}")
+            # Экран ручной проверки решает, что реально переименовывать -
+            # здесь только собираем список по всем images (включая те, где
+            # табличка/цифры не нашлись - их код останется пустым, чтобы
+            # можно было вписать вручную), в исходном порядке съёмки.
+            code_by_name = {r['image']: r['code'] for r in ocr_results}
+            review_items = [
+                {'image': orig_img.name, 'path': orig_img, 'code': code_by_name.get(orig_img.name, '')}
+                for orig_img in images
+            ]
+            recognized = sum(1 for item in review_items if item['code'])
+            self.log_msg(f"✅ Распознано: {recognized} из {len(images)}. Открываю окно проверки...")
+            self.log_queue.put(("__REVIEW__", review_items, input_path))
         except Exception as e:
             self.log_msg(f"❌ Error: {e}")
         finally:
             self.log_queue.put("__DONE__")
+
+    def open_review_screen(self, review_items, input_path):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Проверка результатов ({len(review_items)})")
+        dialog.geometry("640x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        canvas = tk.Canvas(dialog, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(dialog, orient='vertical', command=canvas.yview)
+        rows_frame = tk.Frame(canvas)
+        rows_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window = canvas.create_window((0, 0), window=rows_frame, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+        dialog.bind_all("<MouseWheel>", on_mousewheel)
+
+        canvas.pack(side='top', fill='both', expand=True, padx=10, pady=(10, 0))
+        scrollbar.pack(side='right', fill='y')
+
+        tk.Label(rows_frame, text="Фото", width=14).grid(row=0, column=0, padx=5, pady=5)
+        tk.Label(rows_frame, text="Файл").grid(row=0, column=1, sticky='w', padx=5, pady=5)
+        tk.Label(rows_frame, text="Номер", width=12).grid(row=0, column=2, padx=5, pady=5)
+
+        thumb_size = (96, 72)
+        photos = []  # ссылки на PhotoImage - иначе Tk соберёт их как мусор
+        rows = []  # (item, StringVar) для сборки финальных кодов при подтверждении
+        for i, item in enumerate(review_items, start=1):
+            try:
+                img = Image.open(item['path'])
+                img.thumbnail(thumb_size)
+                photo = ImageTk.PhotoImage(img)
+            except Exception:
+                photo = None
+            photos.append(photo)
+
+            if photo:
+                tk.Label(rows_frame, image=photo).grid(row=i, column=0, padx=5, pady=3)
+            else:
+                tk.Label(rows_frame, text="—", width=14).grid(row=i, column=0, padx=5, pady=3)
+
+            tk.Label(rows_frame, text=item['image'], anchor='w').grid(row=i, column=1, sticky='w', padx=5)
+
+            code_var = tk.StringVar(value=item['code'])
+            tk.Entry(rows_frame, textvariable=code_var, width=12).grid(row=i, column=2, padx=5, pady=3)
+            rows.append((item, code_var))
+
+        self._review_photos = photos  # держим ссылки на весь срок жизни окна
+
+        def cleanup():
+            dialog.unbind_all("<MouseWheel>")
+
+        def on_confirm():
+            cleanup()
+            dialog.destroy()
+            self._finalize_review(rows, input_path)
+
+        def on_cancel():
+            cleanup()
+            dialog.destroy()
+            self.log_msg("↩️ Проверка отменена - ничего не переименовано")
+
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(side='bottom', fill='x', padx=10, pady=10)
+        tk.Button(btn_frame, text="Переименовать", command=on_confirm).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Отмена", command=on_cancel).pack(side='left', padx=5)
+
+    def _finalize_review(self, rows, input_path):
+        final = [(item, var.get().strip()) for item, var in rows]
+
+        df = pd.DataFrame(
+            [{'image': item['image'], 'code': code} for item, code in final if code],
+            columns=['image', 'code'],
+        )
+        codes_csv = input_path / 'gui_plate_codes.csv'
+        df.to_csv(codes_csv, index=False)
+        self.log_msg(f"✅ Подтверждено: {len(df)} из {len(final)} → {codes_csv}")
+
+        renamed_dir = input_path / 'renamed'
+        renamed_dir.mkdir(exist_ok=True)
+
+        manifest_entries = []
+        for item, code in final:
+            if not code:
+                continue
+            orig_img = item['path']
+            if orig_img.exists():
+                new_name = f"{code}_{orig_img.name}"
+                shutil.copy2(orig_img, renamed_dir / new_name)
+                self.log_msg(f"✅ {orig_img.name} → {new_name}")
+                manifest_entries.append({"original": item['image'], "renamed": new_name})
+
+        manifest = {
+            "run_at": datetime.now().isoformat(timespec="seconds"),
+            "entries": manifest_entries,
+        }
+        (renamed_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        self.log_msg(f"✅ Renamed {len(manifest_entries)} images → {renamed_dir}")
     
     def export_renamed(self):
         out_folder = filedialog.askdirectory(title="Export renamed")
