@@ -19,7 +19,7 @@
 - [x] ONNX + onnxruntime вместо torch/ultralytics в рантайме приложения
       (`core/onnx_backend.py`) — обучение по-прежнему на ultralytics
       (`requirements-train.txt`), сам `gui.py` его больше не тянет
+- [x] PyInstaller-сборка (`PlateOCR.spec`) для офлайн-раздачи без Python
 
 Дальше:
 - [ ] Экран ручной проверки распознанных номеров перед переименованием
-- [ ] PyInstaller для офлайн-поставки одним exe

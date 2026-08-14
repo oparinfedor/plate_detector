@@ -71,6 +71,31 @@ python gui.py
 - **Export** — скопировать содержимое `renamed/` в другое место
 - **Cancel** — прервать текущую обработку
 
+## Сборка exe (PyInstaller)
+
+Для офлайн-раздачи без установки Python:
+
+```bash
+pip install -r requirements.txt pyinstaller
+
+pyinstaller --name PlateOCR --onedir --windowed --noconfirm ^
+  --exclude-module torch --exclude-module torchvision --exclude-module torchaudio ^
+  --exclude-module ultralytics --exclude-module matplotlib --exclude-module onnx ^
+  --exclude-module sympy --exclude-module scipy gui.py
+```
+
+`--exclude-module` обязателен: без него PyInstaller статически находит
+`import torch` внутри необязательного `onnxruntime.transformers.machine_info`
+(не используется этим приложением) и на всякий случай тащит в сборку весь
+torch/torchvision — это добавляет ~0.4 ГБ мёртвого веса и противоречит
+всему смыслу перехода на onnxruntime. С исключениями сборка (`dist/PlateOCR/`)
+занимает ~0.23 ГБ.
+
+После сборки положить обе модели в `dist/PlateOCR/models/`
+(`plate_detector.onnx` из репозитория, `digit_detector.onnx` — см.
+раздел «Модели») и раздавать папку `dist/PlateOCR/` целиком.
+`PlateOCR.spec` в репозитории фиксирует эту конфигурацию.
+
 ## Точность
 
 Измерено скриптом `core/eval.py` на `test/` (1037 фото, эталон — номер

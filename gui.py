@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, ttk, scrolledtext, messagebox
 from pathlib import Path
+import sys
 import threading
 import queue
 import json
@@ -14,6 +15,15 @@ from core.detect import find_plate_crop, load_plate_model
 from core.decode import read_digit_boxes, select_digit_string, load_digit_model
 from core.sequence import correct_records
 
+# В собранном PyInstaller-приложении текущая рабочая директория - не
+# обязательно папка с exe (например, при запуске ярлыком) - модели и
+# другие файлы рядом с приложением ищем относительно самого exe/скрипта,
+# а не CWD.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
+
 class PlateOCRApp:
     def __init__(self, root):
         self.root = root
@@ -22,14 +32,14 @@ class PlateOCRApp:
 
         self.input_folder = tk.StringVar()
         self.digit_count = tk.StringVar()  # опционально: 3 или 4, пусто = без нормализации длины
-        plate_model_path = 'models/plate_detector.onnx'
-        if not Path(plate_model_path).exists():
+        plate_model_path = BASE_DIR / 'models' / 'plate_detector.onnx'
+        if not plate_model_path.exists():
             raise FileNotFoundError(
                 f"Не найдена модель детекции таблички: {plate_model_path}. "
                 "Запусти download_models.py."
             )
-        digit_model_path = 'models/digit_detector.onnx'
-        if not Path(digit_model_path).exists():
+        digit_model_path = BASE_DIR / 'models' / 'digit_detector.onnx'
+        if not digit_model_path.exists():
             raise FileNotFoundError(
                 f"Не найдена модель распознавания цифр: {digit_model_path}. "
                 "Запусти download_models.py."
@@ -181,8 +191,9 @@ class PlateOCRApp:
                 self.log_msg("Digit count не задан - уточнение по EXIF-последовательности пропущено")
 
             df = pd.DataFrame(ocr_results)[['image', 'code']] if ocr_results else pd.DataFrame(columns=['image', 'code'])
-            df.to_csv('gui_plate_codes.csv', index=False)
-            self.log_msg(f"✅ Распознано: {len(df)} из {len(images)} → gui_plate_codes.csv")
+            codes_csv = input_path / 'gui_plate_codes.csv'
+            df.to_csv(codes_csv, index=False)
+            self.log_msg(f"✅ Распознано: {len(df)} из {len(images)} → {codes_csv}")
 
             # Rename (копия, оригиналы не трогаем)
             renamed_dir = input_path / 'renamed'
