@@ -1,6 +1,10 @@
-path: .  
-train: train/images
-val: train/images
+# Честный train/val split - см. prepare_split.py и находку 1.2 аудита
+# (раньше val: train/images == train: train/images, mAP отчёта измерял
+# запоминание обучающей выборки, а не обобщение). Сгенерировано:
+#   python prepare_split.py
+path: train
+train: split_train.txt
+val: split_val.txt
 
 nc: 1
 names: ['plate']
