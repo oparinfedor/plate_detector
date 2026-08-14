@@ -5,14 +5,13 @@ import threading
 import queue
 import json
 from datetime import datetime
-from ultralytics import YOLO
 import pandas as pd
 import shutil
 
 from collections import Counter
 
-from core.detect import find_plate_crop
-from core.decode import read_digit_boxes, select_digit_string
+from core.detect import find_plate_crop, load_plate_model
+from core.decode import read_digit_boxes, select_digit_string, load_digit_model
 from core.sequence import correct_records
 
 class PlateOCRApp:
@@ -23,20 +22,20 @@ class PlateOCRApp:
 
         self.input_folder = tk.StringVar()
         self.digit_count = tk.StringVar()  # опционально: 3 или 4, пусто = без нормализации длины
-        plate_model_path = 'models/plate_detector.pt'
+        plate_model_path = 'models/plate_detector.onnx'
         if not Path(plate_model_path).exists():
             raise FileNotFoundError(
                 f"Не найдена модель детекции таблички: {plate_model_path}. "
                 "Запусти download_models.py."
             )
-        digit_model_path = 'models/digit_detector.pt'
+        digit_model_path = 'models/digit_detector.onnx'
         if not Path(digit_model_path).exists():
             raise FileNotFoundError(
                 f"Не найдена модель распознавания цифр: {digit_model_path}. "
                 "Запусти download_models.py."
             )
-        self.plate_model = YOLO(plate_model_path)
-        self.digit_model = YOLO(digit_model_path)
+        self.plate_model = load_plate_model(plate_model_path)
+        self.digit_model = load_digit_model(digit_model_path)
         self.processing = False
         self.cancel_flag = threading.Event()
         self.log = None  # init log before use

@@ -9,10 +9,10 @@
 номеру, который виден на табличке-нумераторе в кадре.
 
 **Процесс:**
-1. Детекция таблички в кадре (`models/plate_detector.pt`, YOLO) — берётся
+1. Детекция таблички в кадре (`models/plate_detector.onnx`, YOLO) — берётся
    один лучший по уверенности бокс, кроп режется прямо из памяти
 2. Распознавание цифр на кропе специализированной моделью
-   (`models/digit_detector.pt`) — не общий OCR, а YOLO-детектор, обученный
+   (`models/digit_detector.onnx`) — не общий OCR, а YOLO-детектор, обученный
    именно на такие цифры
 3. Геометрический отбор найденных боксов (отсекает шум вроде делений
    сантиметровой линейки на нумераторе) и сборка номера слева направо
@@ -23,6 +23,11 @@
    `<папка>/renamed/` — оригиналы никогда не трогаются
 
 Инструмент только с графическим интерфейсом — отдельного CLI сейчас нет.
+
+Рантайм работает через onnxruntime напрямую, без torch/ultralytics в
+поставке (~2.5 ГБ зависимостей убрано из офлайн-сборки). Ultralytics
+нужен только для обучения/переобучения моделей (`requirements-train.txt`),
+не для самого приложения.
 
 ## Быстрый старт
 
@@ -35,18 +40,18 @@ venv\Scripts\activate          # Windows
 
 pip install -r requirements.txt
 
-python download_models.py      # digit_detector.pt (118 МБ) - см. ниже
+python download_models.py      # digit_detector.onnx (215 МБ) - см. ниже
 python gui.py
 ```
 
 ## Модели
 
-- `models/plate_detector.pt` — уже в репозитории. Обучен на честном
+- `models/plate_detector.onnx` — уже в репозитории. Обучен на честном
   train/val split (mAP50 = 0.995, mAP50-95 = 0.795 на реально невиданных
   фото — см. раздел «Точность»).
-- `models/digit_detector.pt` — 118 МБ, слишком тяжёлый для обычного git,
-  качается отдельно: `python download_models.py` выведет прямую ссылку,
-  файл нужно положить в `models/` вручную.
+- `models/digit_detector.onnx` — 215 МБ, слишком тяжёлый для обычного git,
+  качается отдельно: `python download_models.py` выведет прямую ссылку
+  (Яндекс.Диск), файл нужно положить в `models/` вручную.
 
 ## Использование
 
@@ -90,18 +95,20 @@ train/val split по идентичности таблички (не по отд
 
 ```
 core/
-  detect.py                находит табличку, отдаёт один лучший кроп (в памяти)
-  decode.py                digit_detector + геометрический отбор + нормализация
-  sequence.py               уточнение номеров по EXIF-последовательности
-  eval.py                   точность на test/ (все стадии пайплайна)
+  onnx_backend.py            общая инфраструктура onnxruntime-инференса (letterbox, сессии)
+  detect.py                  находит табличку, отдаёт один лучший кроп (в памяти)
+  decode.py                  digit_detector + геометрический отбор + нормализация
+  sequence.py                уточнение номеров по EXIF-последовательности
+  eval.py                    точность на test/ (все стадии пайплайна)
 gui.py                      основной GUI-инструмент
 app.py                      вспомогательный скрипт: переименование по gui_plate_codes.csv
 prepare_split.py            честный train/val split для переобучения детектора
-retrain_plate_detector.py   переобучение детектора таблички
-download_models.py          скачивание digit_detector.pt
+retrain_plate_detector.py   переобучение детектора таблички + экспорт в onnx
+download_models.py          скачивание digit_detector.onnx
 config/data.yaml            конфиг честного split для YOLO-обучения
-models/                     веса (plate_detector.pt в репозитории, digit_detector.pt - отдельно)
-requirements.txt
+models/                     веса (plate_detector.onnx в репозитории, digit_detector.onnx - отдельно)
+requirements.txt            рантайм (onnxruntime, opencv, pandas, pillow)
+requirements-train.txt      + ultralytics/onnx, только для обучения/экспорта
 TODO.md                     что ещё не сделано
 ```
 

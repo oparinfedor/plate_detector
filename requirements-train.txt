@@ -1,0 +1,6 @@
+# Дополнительно к requirements.txt - только для переобучения/экспорта
+# моделей (prepare_split.py, retrain_plate_detector.py). Сама программа
+# (gui.py) их не требует - рантайм работает через onnxruntime.
+-r requirements.txt
+ultralytics>=8.0.0
+onnx>=1.15.0

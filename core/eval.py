@@ -16,10 +16,8 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from ultralytics import YOLO
-
-from core.detect import find_plate_crop
-from core.decode import read_digit_boxes, select_digit_string
+from core.detect import find_plate_crop, load_plate_model
+from core.decode import read_digit_boxes, select_digit_string, load_digit_model
 from core.sequence import read_camera_id, read_capture_time, viterbi_correct
 
 # Имена в test/ не единообразны, встречались:
@@ -44,8 +42,8 @@ def raw_digit_string(boxes):
     return "".join(b["char"] for b in ordered)
 
 
-def run_eval(test_dir, sample=None, plate_model_path="models/plate_detector.pt",
-             digit_model_path="models/digit_detector.pt"):
+def run_eval(test_dir, sample=None, plate_model_path="models/plate_detector.onnx",
+             digit_model_path="models/digit_detector.onnx"):
     test_dir = Path(test_dir)
     # На Windows файловая система регистронезависима, поэтому *.jpg и
     # *.JPG находят одни и те же файлы дважды - убираем дубли по
@@ -63,8 +61,8 @@ def run_eval(test_dir, sample=None, plate_model_path="models/plate_detector.pt",
     print(f"Всего файлов: {len(images)}, эталон разобран: {len(cases)}, "
           f"не разобрано (пропущено): {len(unparsable)}")
 
-    plate_model = YOLO(plate_model_path)
-    digit_model = YOLO(digit_model_path)
+    plate_model = load_plate_model(plate_model_path)
+    digit_model = load_digit_model(digit_model_path)
 
     no_crop = 0
     raw_correct = 0

@@ -45,8 +45,16 @@ def main():
     print(f"mAP50:    {metrics.box.map50:.3f}  (в отчёте старой модели было 0.995 - но на train==val)")
     print(f"mAP50-95: {metrics.box.map:.3f}")
 
-    print(f"\n=== Сквозная точность на test/ с новыми весами ({best_weights}) ===")
-    run_eval("test", plate_model_path=best_weights)
+    # Рантайм (gui.py, core.eval) работает через onnxruntime, а не
+    # ultralytics/torch - экспортируем .pt в .onnx, чтобы отчёт по test/
+    # отражал реально используемый пайплайн, а не .pt-инференс, который
+    # никто в проде не запускает.
+    best_model = YOLO(best_weights)
+    onnx_path = best_model.export(format="onnx", imgsz=640, dynamic=True, simplify=True, opset=12)
+    print(f"Экспорт в ONNX: {onnx_path}")
+
+    print(f"\n=== Сквозная точность на test/ с новыми весами ({onnx_path}) ===")
+    run_eval("test", plate_model_path=str(onnx_path))
 
 
 if __name__ == "__main__":

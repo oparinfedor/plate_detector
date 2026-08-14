@@ -1,52 +1,55 @@
-"""Чтение цифр с кропа таблички через digit_detector.pt (вместо EasyOCR)
-и сборка итоговой строки номера.
+"""Чтение цифр с кропа таблички через digit_detector.onnx и сборка
+итоговой строки номера.
 
-digit_detector.pt — YOLO-модель с классами-цифрами (см. DIGIT_MODEL_NAMES
-ниже: проверяется и логируется при первом запуске, а не берётся на
-веру из аудита). На кропе она находит не только цифры номера, но и
-цифры сантиметровой линейки под ним — их отсеивает select_digit_string
+Работает через onnxruntime напрямую, без ultralytics/torch в рантайме.
+digit_detector - архитектура YOLO26 с "end-to-end" головой: экспорт в
+ONNX уже включает NMS, выход - фиксированные (300, 6) строк
+[x1, y1, x2, y2, conf, cls], лишний NMS вручную не нужен - только отсечь
+по порогу уверенности. Класс-индексы - буквально цифры '0'..'9' (сверено
+через model.names при экспорте .pt -> .onnx, onnxruntime такие имена не
+хранит, поэтому маппинг зашит явно).
+
+На кропе модель находит не только цифры номера, но и цифры
+сантиметровой линейки под ним — их отсеивает select_digit_string
 геометрически (по высоте и общей базовой линии), а не по смыслу.
 """
+from core.onnx_backend import load_session, preprocess, unletterbox_xyxy
 
 HEIGHT_RATIO_THRESHOLD = 0.65   # цифра меньше этой доли от макс. высоты - шум (линейка)
 BASELINE_TOLERANCE_RATIO = 0.5  # допуск отклонения от базовой линии, в долях макс. высоты
 OVERLAP_IOU_THRESHOLD = 0.3     # выше этого - считаем дублем одной и той же цифры
+DIGIT_CONF_THRESHOLD = 0.25
 
-_warned_names = False
+DIGIT_CLASS_NAMES = [str(i) for i in range(10)]
 
 
-def read_digit_boxes(crop, digit_model):
+def load_digit_model(path="models/digit_detector.onnx"):
+    return load_session(path)
+
+
+def read_digit_boxes(crop, session, conf=DIGIT_CONF_THRESHOLD):
     """Возвращает список {char, conf, x1, y1, x2, y2, w, h} для всех
     найденных на кропе "цифр" (без геометрической фильтрации)."""
-    global _warned_names
     if crop is None or crop.size == 0:
         return []
 
-    results = digit_model.predict(source=crop, verbose=False)
-    result = results[0]
-    boxes = result.boxes
-    if boxes is None or len(boxes) == 0:
-        return []
+    inp, scale, padx, pady = preprocess(crop)
+    out = session.run(None, {"images": inp})[0][0]  # (300, 6)
 
-    names = digit_model.names
-    if not _warned_names:
-        non_digit = [v for v in names.values() if not str(v).isdigit()]
-        if non_digit:
-            print(f"[decode] Внимание: имена классов digit_detector не все цифры: {names}")
-        _warned_names = True
-
-    out = []
-    for i in range(len(boxes)):
-        cls_id = int(boxes.cls[i])
-        char = str(names.get(cls_id, "?"))
-        x1, y1, x2, y2 = (float(v) for v in boxes.xyxy[i].tolist())
-        out.append({
+    boxes = []
+    for x1, y1, x2, y2, score, cls in out:
+        if score < conf:
+            continue
+        cls_id = int(cls)
+        char = DIGIT_CLASS_NAMES[cls_id] if 0 <= cls_id < len(DIGIT_CLASS_NAMES) else "?"
+        x1, y1, x2, y2 = unletterbox_xyxy(x1, y1, x2, y2, scale, padx, pady)
+        boxes.append({
             "char": char,
-            "conf": float(boxes.conf[i]),
+            "conf": float(score),
             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
             "w": x2 - x1, "h": y2 - y1,
         })
-    return out
+    return boxes
 
 
 def select_digit_string(boxes, expected_length=None):
