@@ -17,4 +17,4 @@ else:
     print(f'https://drive.google.com/uc?export=download&id={GDRIVE_ID}')
     print('→ models/digit_detector.pt')
 
-print('🚀 python plate_ocr_gui_final.py')
+print('🚀 python gui.py')

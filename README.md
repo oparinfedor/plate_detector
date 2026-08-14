@@ -1,128 +1,119 @@
-# Photo Renamer - Автоматическое переименование фотографий по номерам на табличках
+# Photo Renamer — автоматическое переименование фотографий по номерам на табличках
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![Ultralytics YOLOv8](https://img.shields.io/badge/Ultralytics-YOLOv8-green.svg)](https://github.com/ultralytics/ultralytics)
+[![Ultralytics YOLO](https://img.shields.io/badge/Ultralytics-YOLO-green.svg)](https://github.com/ultralytics/ultralytics)
 
-## 🎯 Описание
+## Описание
 
-Приложение для автоматического переименования фотографий по номерам на табличках. 
+Инструмент для полевой обработки фотографий: переименовывает снимки по
+номеру, который виден на табличке-нумераторе в кадре.
 
 **Процесс:**
-1. Детекция таблички с номером (YOLOv8)
-2. Извлечение текста номера (EasyOCR) 
-3. Переименование файла: `MDZ087_1.JPG` → `MDZ087_1.jpg`
+1. Детекция таблички в кадре (`models/plate_detector.pt`, YOLO) — берётся
+   один лучший по уверенности бокс, кроп режется прямо из памяти
+2. Распознавание цифр на кропе специализированной моделью
+   (`models/digit_detector.pt`) — не общий OCR, а YOLO-детектор, обученный
+   именно на такие цифры
+3. Геометрический отбор найденных боксов (отсекает шум вроде делений
+   сантиметровой линейки на нумераторе) и сборка номера слева направо
+4. Если в папке много фото одной камерой подряд — необязательное
+   уточнение номеров по порядку съёмки через EXIF (см. поле
+   "Digit count" ниже)
+5. Копия файла с новым именем `<номер>_<исходное_имя>` сохраняется в
+   `<папка>/renamed/` — оригиналы никогда не трогаются
 
-Поддерживает GUI и CLI режимы.
+Инструмент только с графическим интерфейсом — отдельного CLI сейчас нет.
 
-## 🚀 Быстрый старт
+## Быстрый старт
 
 ```bash
-git clone https://github.com/yourusername/sefer-photo-renamer.git
-cd sefer-photo-renamer
+git clone https://github.com/oparinfedor/plate_detector.git
+cd plate_detector
+python -m venv venv
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # Linux/macOS
+
 pip install -r requirements.txt
 
-# Скачать модели (ссылки в разделе Models)
-python download_models.py  # digit_detector.pt
-# Запуск GUI
-python gui.py
-
-# CLI: переименовать папку photos/
-python app.py --source photos/ --dry-run
-python app.py --source photos/
-```
-
-## 📦 Установка
-
-```bash
-pip install ultralytics easyocr opencv-python pandas pillow tkinter
-```
-
-### Модели (обязательно)
-
-1. **plate_detector.pt** - YOLOv8 для детекции табличек [скачать](models/plate_detector.pt)
-2. **digit_detector.pt** - Детектор цифр [скачать](models/digit_detector.pt)
-
-Поместите в папку `models/`.
-
-## 💻 Использование
-
-### GUI режим
-```
+python download_models.py      # digit_detector.pt (118 МБ) - см. ниже
 python gui.py
 ```
-- Выберите папку с фото
-- Настройте параметры (conf, OCR)
-- Dry run / Rename
 
-### CLI
+## Модели
+
+- `models/plate_detector.pt` — уже в репозитории. Обучен на честном
+  train/val split (mAP50 = 0.995, mAP50-95 = 0.795 на реально невиданных
+  фото — см. раздел «Точность»).
+- `models/digit_detector.pt` — 118 МБ, слишком тяжёлый для обычного git,
+  качается отдельно: `python download_models.py` выведет прямую ссылку,
+  файл нужно положить в `models/` вручную.
+
+## Использование
+
 ```bash
-python app.py --help
-
-# Основные параметры
-python app.py --source test/ --dry-run           # Показать изменения
-python app.py --source test/                     # Переименовать
-python app.py --source test/ --conf 0.5 --save-txt # Сохранить детекции
+python gui.py
 ```
 
-## 📊 Результаты
+- **Browse** — выбрать папку с фотографиями
+- **Digit count** — сколько цифр на табличках в этой сессии (3 или 4).
+  Можно оставить пустым — определится автоматически по большинству
+  кадров в папке. Если поле заполнено, дополнительно включается
+  уточнение по EXIF-последовательности съёмки (шаг 4 выше)
+- **Process** — запускает распознавание; результаты копируются в
+  `<папка>/renamed/` вместе с журналом `manifest.json`
+- **Undo last run** — удаляет из `renamed/` файлы последнего прогона по
+  `manifest.json` (оригиналы не затрагиваются в любом случае)
+- **Export** — скопировать содержимое `renamed/` в другое место
+- **Cancel** — прервать текущую обработку
 
-| Epoch | mAP50 | mAP50-95 | Model |
-|-------|-------|----------|-------|
-| 50    | 0.85  | 0.42     | [best.pt](models/plate_detector.pt) |
+## Точность
 
-**Точность:** 85%+ на валидации (1 табличка/фото).
+Измерено скриптом `core/eval.py` на `test/` (1037 фото, эталон — номер
+зашит в имя файла):
 
-## 🛠 Структура проекта
+| Стадия                                  | Точность |
+|------------------------------------------|---------:|
+| Без отбора (сырой вывод детектора цифр)   |     0.8% |
+| + геометрический отбор цифр               |    39.1% |
+| + нормализация по длине номера            |    79.0% |
+| + уточнение по EXIF-последовательности    | **85.1%** |
+
+Детектор таблички: mAP50 = 0.995, mAP50-95 = 0.795 — честный
+train/val split по идентичности таблички (не по отдельным кадрам, чтобы
+несколько фото одной таблички не утекали одновременно в train и val),
+см. `prepare_split.py`.
+
+Прогнать самостоятельно: `python -m core.eval` (опция `--sample N` для
+быстрой проверки на подвыборке).
+
+## Структура проекта
 
 ```
-.
-├── app.py                 # CLI основной
-├── gui.py                 # GUI интерфейс
-├── models/                # Модели ML
-│   ├── plate_detector.pt
-│   └── digit_detector.pt
-├── config/
-│   └── data.yaml          # YOLO конфиг
-├── requirements.txt       # Зависимости
-├── README.md              # Документация
-└── tests/                 # Тестовые данные
+core/
+  detect.py                находит табличку, отдаёт один лучший кроп (в памяти)
+  decode.py                digit_detector + геометрический отбор + нормализация
+  sequence.py               уточнение номеров по EXIF-последовательности
+  eval.py                   точность на test/ (все стадии пайплайна)
+gui.py                      основной GUI-инструмент
+app.py                      вспомогательный скрипт: переименование по gui_plate_codes.csv
+prepare_split.py            честный train/val split для переобучения детектора
+retrain_plate_detector.py   переобучение детектора таблички
+download_models.py          скачивание digit_detector.pt
+config/data.yaml            конфиг честного split для YOLO-обучения
+models/                     веса (plate_detector.pt в репозитории, digit_detector.pt - отдельно)
+requirements.txt
+TODO.md                     что ещё не сделано
 ```
 
-## 🔧 Параметры
+## Дальнейшие планы
 
-| Параметр | Значение | Описание |
-|----------|----------|----------|
-| `--conf` | 0.25 | Confidence порог YOLO |
-| `--iou`  | 0.7  | NMS IoU threshold |
-| `--dry-run` | - | Показать изменения БЕЗ сохранения |
-| `--save-txt` | - | Сохранить YOLO labels |
+См. `TODO.md`.
 
-## 📈 Метрики обучения
+## Лицензия
 
-```
-mAP50: 0.85
-mAP50-95: 0.42 (50 эпох)
-```
+MIT — см. [LICENSE](LICENSE).
 
-Графики обучения: [runs/detect/train/](runs/detect/train/)
+## Благодарности
 
-## 🤝 Contributing
-
-1. Fork репозитория
-2. Создайте issue/feature request
-3. Pull Request в `main`
-
-## 📄 Лицензия
-
-MIT License - смотрите [LICENSE](LICENSE)
-
-## 🙏 Благодарности
-
-- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics)
-- [EasyOCR](https://github.com/JaidedAI/EasyOCR)
-- [LabelImg](https://github.com/HumanSignal/labelImg)
-
----
-
-⭐ **Если помогло - поставьте звезду!**
-
+- [Ultralytics YOLO](https://github.com/ultralytics/ultralytics)
+- [LabelImg](https://github.com/HumanSignal/labelImg) — разметка датасета
